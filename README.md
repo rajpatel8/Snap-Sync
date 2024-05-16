@@ -19,4 +19,4 @@ LocalCloud is licensed under the MIT License.
 
 ## Support
 
-For assistance, email support@localcloud.com.
+For assistance, email rajphx299@gmail.com.

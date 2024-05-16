@@ -36,7 +36,7 @@ HostInfo getHostAndIP() {
 int main()
 {
     HostInfo info =getHostAndIP() ;   
-    std :: cout << " HostName : "<< info.hostname << '\n';
-    std :: cout << " Host IP  : "<< info.ip_addresses << '\n';
+    // std :: cout << " HostName : "<< info.hostname << '\n';
+    // std :: cout << " Host IP  : "<< info.ip_addresses << '\n';
     return 0 ;
 }

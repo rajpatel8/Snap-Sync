@@ -45,7 +45,7 @@ HostInfo getHostAndIP() {
 }
 
 bool authenticateClient(const string& received_password) {
-    if (received_password == "THALA07") {
+    if (received_password == "0246192") {
         cout << "Password authentication successful" << endl;
         // Placeholder for opening another socket for file transfer
         return true;

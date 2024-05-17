@@ -1,7 +1,7 @@
 //  header file for the server 
 
-#include <Lord-Rajkumar.h>          // Local - env
-// #include <bits/stdc++.h>         // Global - env
+// #include <Lord-Rajkumar.h>          // Local - env
+#include <bits/stdc++.h>         // Global - env
 
 // beta - still unstable
 // #include <server.h>
@@ -44,6 +44,16 @@ HostInfo getHostAndIP() {
     return info;
 }
 
+bool authenticateClient(const string& received_password) {
+    if (received_password == "THALA07") {
+        cout << "Password authentication successful" << endl;
+        // Placeholder for opening another socket for file transfer
+        return true;
+    } else {
+        cout << "Password authentication failed" << endl;
+        return false;
+    }
+}
 
 int main()
 {
@@ -105,14 +115,13 @@ int main()
 
         string received_password(buffer);
         
-        if (received_password == "THALA07") {
-            cout << "Password authentication successful" << endl;
-            close(client_socket) ; // closing it temporaily
-            // TODO : open another socket for file transfer
-
+        if (authenticateClient(received_password)) {
+            // Handle authenticated client connection (implement this logic separately)
+            // Currently, we're just closing the client socket as a placeholder
+            close(client_socket);
         } else {
-            cout << "Password authentication failed" << endl;
-            close(client_socket) ;
+            // Authentication failed, close the client socket and continue to the next
+            close(client_socket);
             continue;
         }
 

@@ -45,7 +45,7 @@ HostInfo getHostAndIP() {
 }
 
 bool authenticateClient(const string& received_password) {
-    if (received_password == "THALA07") {
+    if (received_password == "0246192") {
         cout << "Password authentication successful" << endl;
         // Placeholder for opening another socket for file transfer
         return true;
@@ -75,7 +75,7 @@ int main()
     struct sockaddr_in server_addr, client_addr;
     server_addr.sin_family = AF_INET ;
     server_addr.sin_addr.s_addr = INADDR_ANY ;
-    server_addr.sin_port = htons(21) ;
+    server_addr.sin_port = htons(6969) ;
 
     // binding socket to ip and port
     if (bind(server_socket,(struct sockaddr *)&server_addr, sizeof(server_addr)) == -1){
@@ -86,7 +86,7 @@ int main()
 
     // Listening on port 21
     if(listen(server_socket,3) == -1){ // Maximum 3 pending Connection
-        perror("\nError listning on port 21\n") ;
+        perror("\nError listning on port 6969\n") ;
         exit(EXIT_FAILURE);
     }
     // cout << "\n listning on port 21 \n" ;   // only for debug

@@ -164,13 +164,13 @@ int main()
         if (authenticateClient(receivedHashString, expectedHash)) {
             cout << "\nHash verified!\n";
             // send success message to client
-            string successMessage = "Authentication successful";
+            string successMessage = "\nAuthentication successful\n";
             if (send(client_socket, successMessage.c_str(), successMessage.size(), 0) == -1) {
                 perror("\nError sending success message to client\n");
                 close(client_socket);
                 continue;
             }
-            
+
             // close(client_socket);
         }
         else {

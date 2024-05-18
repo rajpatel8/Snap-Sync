@@ -5,33 +5,38 @@
 
 // beta - still unstable
 // #include <server.h>
-#include <openssl/evp.h>
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <ctime>
+#include <unistd.h>       // For close() and gethostname()
+#include <arpa/inet.h>    // For inet_ntoa
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h> // For inet_ntoa
-#include <netdb.h> // For getaddrinfo()
-#include <unistd.h> // For close()
+#include <netdb.h>        // For getaddrinfo()
 #include <random>
+#include <thread>
+#include <sys/stat.h>     // For mkdir
+#include <openssl/evp.h>
 
 using namespace std;
-
 struct HostInfo {
-    std::string hostname;
-    std::string ip_addresses;
+    string hostname;
+    string ip_addresses;
 };
 
 HostInfo getHostAndIP() {
     HostInfo info;
     char hostbuffer[256];
     if (gethostname(hostbuffer, sizeof(hostbuffer)) == -1) {
-        perror("\nError getting hostname\n");
+        perror("Error getting hostname");
         exit(EXIT_FAILURE);
     }
     info.hostname = hostbuffer;
 
     struct hostent *host_entry = gethostbyname(hostbuffer);
     if (host_entry == nullptr) {
-        herror("\nError getting host by name\n");
+        herror("Error getting host by name");
         exit(EXIT_FAILURE);
     }
 
@@ -45,44 +50,24 @@ HostInfo getHostAndIP() {
     return info;
 }
 
-bool authenticateClient(const std::string& receivedHash, const std::string& expectedHash) {
+bool authenticateClient(const string& receivedHash, const string& expectedHash) {
     return receivedHash == expectedHash;
 }
 
-// string hashStringToSHA256(const std::string& input) {
-//     EVP_MD_CTX* context = EVP_MD_CTX_new();
-//     const EVP_MD* md = EVP_sha256();
-//     unsigned char hash[EVP_MAX_MD_SIZE];
-//     unsigned int lengthOfHash = 0;
-
-//     EVP_DigestInit_ex(context, md, nullptr);
-//     EVP_DigestUpdate(context, input.c_str(), input.size());
-//     EVP_DigestFinal_ex(context, hash, &lengthOfHash);
-//     EVP_MD_CTX_free(context);
-
-//     std::ostringstream hexStream;
-//     for (unsigned int i = 0; i < lengthOfHash; ++i) {
-//         hexStream << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
-//     }
-//     return hexStream.str();
-// }
-
 string generateRandomString(size_t length) {
     const string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:',.<>?/~`";
-    random_device rd;  // Non-deterministic random device
-    mt19937 generator(rd());  // Mersenne Twister RNG
+    random_device rd;
+    mt19937 generator(rd());
     uniform_int_distribution<> distribution(0, characters.size() - 1);
 
     string randomString;
     for (size_t i = 0; i < length; ++i) {
         randomString += characters[distribution(generator)];
     }
-
     return randomString;
 }
 
-// FNV-1a hash function
-size_t fnv1a_hash(const std::string& str) {
+size_t fnv1a_hash(const string& str) {
     const size_t FNV_offset_basis = 14695981039346656037ULL;
     const size_t FNV_prime = 1099511628211ULL;
 
@@ -94,96 +79,105 @@ size_t fnv1a_hash(const std::string& str) {
     return hash;
 }
 
-int main()
-{
-    /* Only for debug/testing
-     * HostInfo info =getHostAndIP() ;      
-     * cout << "\nServer Name: " << info.hostname << '\n';
-     * cout << "\nSerfver IP : " << info.ip_addresses << '\n';
-    */
+bool createFolder(const string& folderName) {
+    if (mkdir(folderName.c_str(), 0755) == -1) {
+        perror("Error creating folder");
+        return false;
+    }
+    return true;
+}
 
-    // creating socket
+void handleClient(int client_socket) {
+    // Send random string to client
+    string Token = generateRandomString(256);
+    cout << "Token: " << Token << '\n';
+    if (send(client_socket, Token.c_str(), Token.size(), 0) == -1) {
+        perror("Error sending token to client");
+        close(client_socket);
+        return;
+    }
+    cout << "Token sent to client\nWaiting for client to send hash\n";
 
-    int server_socket = socket(AF_INET,SOCK_STREAM,0) ;
-    if(server_socket == -1)
-    { 
-        perror("\nError Creating Socket\n") ;
-        exit(EXIT_FAILURE) ;
+    // Hash the token and wait for the client to send the hash
+    string expectedHash = to_string(fnv1a_hash(Token));
+    char receivedHash[1024] = {0};
+    if (recv(client_socket, receivedHash, sizeof(receivedHash), 0) == -1) {
+        perror("Error receiving hash from client");
+        close(client_socket);
+        return;
+    }
+    cout << "Hash received from client\nChecking hash...\n";
+
+    string receivedHashString = string(receivedHash);
+    if (authenticateClient(receivedHashString, expectedHash)) {
+        cout << "Hash verified!\n";
+        string successMessage = "Authentication successful\n";
+        if (send(client_socket, successMessage.c_str(), successMessage.size(), 0) == -1) {
+            perror("Error sending success message to client");
+            close(client_socket);
+            return;
+        }
+
+        // Create folder with today's date
+        time_t now = time(0);
+        tm *ltm = localtime(&now);
+        string folderName = to_string(1900 + ltm->tm_year) + "-" + to_string(1 + ltm->tm_mon) + "-" + to_string(ltm->tm_mday);
+        if (createFolder(folderName)) {
+            cout << "Folder created successfully\n";
+        } else {
+            cout << "Error creating folder\n";
+            close(client_socket);
+            return;
+        }
+
+        string signal = "start";
+        if (send(client_socket, signal.c_str(), signal.size(), 0) == -1) {
+            perror("Error sending signal to client");
+        }
+    } else {
+        cout << "Hash verification failed!\n";
     }
 
-    struct sockaddr_in server_addr, client_addr;
-    server_addr.sin_family = AF_INET ;
-    server_addr.sin_addr.s_addr = INADDR_ANY ;
-    server_addr.sin_port = htons(21) ;
+    close(client_socket);
+}
 
-    // binding socket to ip and port
-    if (bind(server_socket,(struct sockaddr *)&server_addr, sizeof(server_addr)) == -1){
-        perror("\nError in binding\n") ;
+int main() {
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket == -1) {
+        perror("Error creating socket");
         exit(EXIT_FAILURE);
     }
-    // cout << "\n Socket binding successful\n" ; // only for debug
 
-    // Listening on port 21
-    if(listen(server_socket,3) == -1){ // Maximum 3 pending Connection
-        perror("\nError listning on port 21\n") ;
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(21);
+
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
+        perror("Error binding socket");
+        close(server_socket);
         exit(EXIT_FAILURE);
     }
-    // cout << "\n listning on port 21 \n" ;   // only for debug
 
-    while (true){
-        int client_socket = accept(server_socket,NULL, NULL) ;
-        if(client_socket == -1){
-            perror("\nClient Socket setup error\n") ;
-            continue;
-        }
-         
-         cout << "\nConnection accepted from client\n" ;
-
-        // send random string to client
-        string Token = generateRandomString(256);
-        cout << "\nToken : " << Token << '\n';
-        if (send(client_socket, Token.c_str(), Token.size(), 0) == -1) {
-            perror("\nError sending token to client\n");
-            close(client_socket);
-            continue;
-        }
-        cout << "\nToken sent to client\n";
-        cout << "\nWaiting for client to send hash\n";
-        // hash the token and wait for the client to send the hash
-        string expectedHash = to_string(fnv1a_hash(Token));
-        char receivedHash[1024];
-        if (recv(client_socket, receivedHash, sizeof(receivedHash), 0) == -1) {
-            perror("\nError receiving hash from client\n");
-            close(client_socket);
-            continue;
-        }
-        cout << "\nHash received from client\n";
-        string receivedHashString = string(receivedHash);
-        // check if the received hash matches the expected hash
-        cout << "\nChecking hash...\n";
-        if (authenticateClient(receivedHashString, expectedHash)) {
-            cout << "\nHash verified!\n";
-            // send success message to client
-            string successMessage = "\nAuthentication successful\n";
-            if (send(client_socket, successMessage.c_str(), successMessage.size(), 0) == -1) {
-                perror("\nError sending success message to client\n");
-                close(client_socket);
-                continue;
-            }
-
-            // close(client_socket);
-        }
-        else {
-            cout << "\nHash verification failed!\n";
-            close(client_socket);
-            continue;
-        }
-        
+    if (listen(server_socket, 3) == -1) {
+        perror("Error listening on port 21");
+        close(server_socket);
+        exit(EXIT_FAILURE);
     }
 
-    // Close the server socket
+    cout << "Listening on port 21\n";
+
+    while (true) {
+        int client_socket = accept(server_socket, NULL, NULL);
+        if (client_socket == -1) {
+            perror("Client socket setup error");
+            continue;
+        }
+
+        cout << "Connection accepted from client\n";
+        thread(handleClient, client_socket).detach();
+    }
+
     close(server_socket);
-
-    return 0 ;
-
+    return 0;
 }

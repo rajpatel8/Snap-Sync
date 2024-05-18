@@ -1,16 +1,17 @@
 //  header file for the server 
 
-// #include <Lord-Rajkumar.h>          // Local - env
-#include <bits/stdc++.h>         // Global - env
+#include <Lord-Rajkumar.h>          // Local - env
+// #include <bits/stdc++.h>         // Global - env
 
 // beta - still unstable
 // #include <server.h>
-
+#include <openssl/evp.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h> // For inet_ntoa
 #include <netdb.h> // For getaddrinfo()
 #include <unistd.h> // For close()
+#include <random>
 
 using namespace std;
 
@@ -44,15 +45,53 @@ HostInfo getHostAndIP() {
     return info;
 }
 
-bool authenticateClient(const string& received_password) {
-    if (received_password == "0246192") {
-        cout << "Password authentication successful" << endl;
-        // Placeholder for opening another socket for file transfer
-        return true;
-    } else {
-        cout << "Password authentication failed" << endl;
-        return false;
+bool authenticateClient(const std::string& receivedHash, const std::string& expectedHash) {
+    return receivedHash == expectedHash;
+}
+
+// string hashStringToSHA256(const std::string& input) {
+//     EVP_MD_CTX* context = EVP_MD_CTX_new();
+//     const EVP_MD* md = EVP_sha256();
+//     unsigned char hash[EVP_MAX_MD_SIZE];
+//     unsigned int lengthOfHash = 0;
+
+//     EVP_DigestInit_ex(context, md, nullptr);
+//     EVP_DigestUpdate(context, input.c_str(), input.size());
+//     EVP_DigestFinal_ex(context, hash, &lengthOfHash);
+//     EVP_MD_CTX_free(context);
+
+//     std::ostringstream hexStream;
+//     for (unsigned int i = 0; i < lengthOfHash; ++i) {
+//         hexStream << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
+//     }
+//     return hexStream.str();
+// }
+
+string generateRandomString(size_t length) {
+    const string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:',.<>?/~`";
+    random_device rd;  // Non-deterministic random device
+    mt19937 generator(rd());  // Mersenne Twister RNG
+    uniform_int_distribution<> distribution(0, characters.size() - 1);
+
+    string randomString;
+    for (size_t i = 0; i < length; ++i) {
+        randomString += characters[distribution(generator)];
     }
+
+    return randomString;
+}
+
+// FNV-1a hash function
+size_t fnv1a_hash(const std::string& str) {
+    const size_t FNV_offset_basis = 14695981039346656037ULL;
+    const size_t FNV_prime = 1099511628211ULL;
+
+    size_t hash = FNV_offset_basis;
+    for (char c : str) {
+        hash ^= static_cast<size_t>(c);
+        hash *= FNV_prime;
+    }
+    return hash;
 }
 
 int main()
@@ -100,31 +139,46 @@ int main()
          
          cout << "\nConnection accepted from client\n" ;
 
-        // setting up buffer to recive message
-        char buffer[8] ; // 7 letter data + null terminator
-        int bytes_recevied = recv(client_socket ,buffer , sizeof(buffer), 0) ;
-        if(bytes_recevied==-1){
-            perror("Error in reciving message from client") ;
+        // send random string to client
+        string Token = generateRandomString(256);
+        cout << "\nToken : " << Token << '\n';
+        if (send(client_socket, Token.c_str(), Token.size(), 0) == -1) {
+            perror("\nError sending token to client\n");
             close(client_socket);
             continue;
         }
-
-        buffer[bytes_recevied] = '\0' ; 
-
-        // cout << "\nRecived the Message : " << buffer << '\n' ;
-
-        string received_password(buffer);
+        cout << "\nToken sent to client\n";
+        cout << "\nWaiting for client to send hash\n";
+        // hash the token and wait for the client to send the hash
+        string expectedHash = to_string(fnv1a_hash(Token));
+        char receivedHash[1024];
+        if (recv(client_socket, receivedHash, sizeof(receivedHash), 0) == -1) {
+            perror("\nError receiving hash from client\n");
+            close(client_socket);
+            continue;
+        }
+        cout << "\nHash received from client\n";
+        string receivedHashString = string(receivedHash);
+        // check if the received hash matches the expected hash
+        cout << "\nChecking hash...\n";
+        if (authenticateClient(receivedHashString, expectedHash)) {
+            cout << "\nHash verified!\n";
+            // send success message to client
+            string successMessage = "Authentication successful";
+            if (send(client_socket, successMessage.c_str(), successMessage.size(), 0) == -1) {
+                perror("\nError sending success message to client\n");
+                close(client_socket);
+                continue;
+            }
+            
+            // close(client_socket);
+        }
+        else {
+            cout << "\nHash verification failed!\n";
+            close(client_socket);
+            continue;
+        }
         
-        if (authenticateClient(received_password)) {
-            // Handle authenticated client connection (implement this logic separately)
-            // Currently, we're just closing the client socket as a placeholder
-            close(client_socket);
-        } else {
-            // Authentication failed, close the client socket and continue to the next
-            close(client_socket);
-            continue;
-        }
-
     }
 
     // Close the server socket

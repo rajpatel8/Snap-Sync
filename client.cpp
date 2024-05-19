@@ -1,10 +1,11 @@
-// #include <bits/stdc++.h>
-// #include <openssl/sha.h>
-#include <Lord-Rajkumar.h>   
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <cstdlib>       // For exit()
+#include <unistd.h>      // For close()
+#include <arpa/inet.h>   // For inet_pton and other network functions
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 
 using namespace std;
 

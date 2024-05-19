@@ -10,6 +10,8 @@
 #include <random>
 #include <sys/stat.h>     // For mkdir
 #include <openssl/evp.h>
+#include <dirent.h>
+#include <fstream>
 
 using namespace std;
 
@@ -82,9 +84,9 @@ bool createFolder(const string& folderName) {
 
 void handleClient(int client_socket) {
     // Send random string to client
-    string Token = generateRandomString(256);
-    cout << "Token: " << Token << '\n';
-    if (send(client_socket, Token.c_str(), Token.size(), 0) == -1) {
+    string token = generateRandomString(255);
+    cout << "Token: " << token << '\n';
+    if (send(client_socket, token.c_str(), token.size() + 1, 0) == -1) { // include null terminator
         perror("Error sending token to client");
         close(client_socket);
         return;
@@ -92,7 +94,7 @@ void handleClient(int client_socket) {
     cout << "Token sent to client\nWaiting for client to send hash\n";
 
     // Hash the token and wait for the client to send the hash
-    string expectedHash = to_string(fnv1a_hash(Token));
+    string expectedHash = to_string(fnv1a_hash(token));
     char receivedHash[1024] = {0};
     if (recv(client_socket, receivedHash, sizeof(receivedHash), 0) == -1) {
         perror("Error receiving hash from client");
@@ -102,10 +104,14 @@ void handleClient(int client_socket) {
     cout << "Hash received from client\nChecking hash...\n";
 
     string receivedHashString = string(receivedHash);
+
+    cout << "Received hash: " << receivedHashString << endl;
+    cout << "Expected hash: " << expectedHash << endl;
+
     if (authenticateClient(receivedHashString, expectedHash)) {
         cout << "Hash verified!\n";
         string successMessage = "Authentication successful\n";
-        if (send(client_socket, successMessage.c_str(), successMessage.size(), 0) == -1) {
+        if (send(client_socket, successMessage.c_str(), successMessage.size() + 1, 0) == -1) { // include null terminator
             perror("Error sending success message to client");
             close(client_socket);
             return;
@@ -124,9 +130,67 @@ void handleClient(int client_socket) {
         }
 
         string signal = "start";
-        if (send(client_socket, signal.c_str(), signal.size(), 0) == -1) {
+        if (send(client_socket, signal.c_str(), signal.size() + 1, 0) == -1) { // include null terminator
             perror("Error sending signal to client");
         }
+
+        // Loop to receive multiple files
+        while (true) {
+            // Receive file metadata
+            char filename[1024] = {0};
+            if (recv(client_socket, filename, sizeof(filename), 0) == -1) {
+                perror("Error receiving filename from client");
+                close(client_socket);
+                return;
+            }
+            if (strcmp(filename, "end_of_files") == 0) {
+                break; // End of file transmission
+            }
+            cout << "File name: " << filename << endl;
+
+            // Receive file size
+            size_t filesize;
+            if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
+                perror("Error receiving file size from client");
+                close(client_socket);
+                return;
+            }
+            cout << "File size: " << filesize << " bytes" << endl;
+
+            string filepath = folderName + "/" + string(filename);
+            ofstream file(filepath, ios::binary);
+            if (!file) {
+                perror("Error opening file for writing");
+                close(client_socket);
+                return;
+            }
+
+            // Receive file data in chunks
+            char buffer[1024];
+            size_t bytes_received = 0;
+            while (bytes_received < filesize) {
+                ssize_t n = recv(client_socket, buffer, sizeof(buffer), 0);
+                if (n == -1) {
+                    perror("Error receiving file from client");
+                    close(client_socket);
+                    return;
+                }
+                file.write(buffer, n);
+                bytes_received += n;
+            }
+
+            cout << "File received and saved to " << filepath << endl;
+
+            // Inform client that the file has been received
+            string fileReceived = "File received: ";
+            if (send(client_socket, fileReceived.c_str(), fileReceived.size() + 1, 0) == -1) { // include null terminator
+                perror("Error sending file received message to client");
+                close(client_socket);
+                return;
+            }
+        }
+
+        cout << "All files received.\n";
     } else {
         cout << "Hash verification failed!\n";
     }
@@ -144,7 +208,7 @@ int main() {
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(21);
+    server_addr.sin_port = htons(6969);
 
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
         perror("Error binding socket");
@@ -153,12 +217,12 @@ int main() {
     }
 
     if (listen(server_socket, 3) == -1) {
-        perror("Error listening on port 21");
+        perror("Error listening on port 6969");
         close(server_socket);
         exit(EXIT_FAILURE);
     }
 
-    cout << "Listening on port 21\n";
+    cout << "Listening on port 6969\n";
 
     while (true) {
         int client_socket = accept(server_socket, NULL, NULL);
@@ -174,3 +238,4 @@ int main() {
     close(server_socket);
     return 0;
 }
+

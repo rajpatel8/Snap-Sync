@@ -1,241 +1,263 @@
 #include <iostream>
 #include <string>
-#include <cstring>
+#include <fstream>
 #include <ctime>
-#include <unistd.h>       // For close() and gethostname()
-#include <arpa/inet.h>    // For inet_ntoa
+#include <unistd.h>
+#include <arpa/inet.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netdb.h>        // For getaddrinfo()
+#include <csignal>
 #include <random>
-#include <sys/stat.h>     // For mkdir
-#include <openssl/evp.h>
-#include <dirent.h>
-#include <fstream>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <algorithm>
+
+#define TOKEN_LENGTH 256
 
 using namespace std;
 
-struct HostInfo {
-    string hostname;
-    string ip_addresses;
-};
+class Server {
+    int PORT;
+    int server_socket;
+    int client_socket;
+    struct sockaddr_in address;
+    int address_length;
 
-HostInfo getHostAndIP() {
-    HostInfo info;
-    char hostbuffer[256];
-    if (gethostname(hostbuffer, sizeof(hostbuffer)) == -1) {
-        perror("Error getting hostname");
-        exit(EXIT_FAILURE);
-    }
-    info.hostname = hostbuffer;
-
-    struct hostent *host_entry = gethostbyname(hostbuffer);
-    if (host_entry == nullptr) {
-        herror("Error getting host by name");
-        exit(EXIT_FAILURE);
-    }
-
-    struct in_addr **addr_list = (struct in_addr **)host_entry->h_addr_list;
-    for (int i = 0; addr_list[i] != NULL; i++) {
-        info.ip_addresses += inet_ntoa(*addr_list[i]);
-        if (addr_list[i + 1] != NULL) {
-            info.ip_addresses += " ";
+    public:
+        Server(int port = 6969) : PORT(port) {
+            create_socket();
+            setup_address();
+            bind_socket();
+            listen_for_connections();
+            register_signal_handler();
         }
-    }
-    return info;
-}
 
-bool authenticateClient(const string& receivedHash, const string& expectedHash) {
-    return receivedHash == expectedHash;
-}
+        ~Server() {
+            close(server_socket);
+        }
 
-string generateRandomString(size_t length) {
-    const string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:',.<>?/~`";
-    random_device rd;
-    mt19937 generator(rd());
-    uniform_int_distribution<> distribution(0, characters.size() - 1);
+        void run() {
+            while (true) {
+                accept_connection();
+                handle_client();
+            }
+        }
 
-    string randomString;
-    for (size_t i = 0; i < length; ++i) {
-        randomString += characters[distribution(generator)];
-    }
-    return randomString;
-}
+    private:
+        void create_socket() {
+            if ((server_socket = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+                perror("[ERROR] : Socket creation failed");
+                exit(EXIT_FAILURE);
+            }
+            cout << "[LOG] : Socket created successfully.\n";
+        }
 
-size_t fnv1a_hash(const string& str) {
-    const size_t FNV_offset_basis = 14695981039346656037ULL;
-    const size_t FNV_prime = 1099511628211ULL;
+        void setup_address() {
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = INADDR_ANY;
+            address.sin_port = htons(PORT);
+            address_length = sizeof(address);
+        }
 
-    size_t hash = FNV_offset_basis;
-    for (char c : str) {
-        hash ^= static_cast<size_t>(c);
-        hash *= FNV_prime;
-    }
-    return hash;
-}
+        void bind_socket() {
+            if (bind(server_socket, (struct sockaddr *)&address, sizeof(address)) < 0) {
+                perror("[ERROR] : Bind failed");
+                exit(EXIT_FAILURE);
+            }
+            cout << "[LOG] : Bind successful.\n";
+        }
 
-bool createFolder(const string& folderName) {
-    if (mkdir(folderName.c_str(), 0755) == -1) {
-        perror("Error creating folder");
-        return false;
-    }
-    return true;
-}
+        void listen_for_connections() {
+            if (listen(server_socket, 3) < 0) {
+                perror("[ERROR] : Listen failed");
+                exit(EXIT_FAILURE);
+            }
+            cout << "[LOG] : Listening for connections (Max queue: 3)\n";
+        }
 
-void handleClient(int client_socket) {
-    // Send random string to client
-    string token = generateRandomString(255);
-    cout << "Token: " << token << '\n';
-    if (send(client_socket, token.c_str(), token.size() + 1, 0) == -1) { // include null terminator
-        perror("Error sending token to client");
-        close(client_socket);
-        return;
-    }
-    cout << "Token sent to client\nWaiting for client to send hash\n";
+        void accept_connection() {
+            if ((client_socket = accept(server_socket, (struct sockaddr *)&address, (socklen_t*)&address_length)) < 0) {
+                perror("[ERROR] : Accept failed");
+                exit(EXIT_FAILURE);
+            }
+            cout << "[LOG] : Connection accepted from client.\n";
+        }
 
-    // Hash the token and wait for the client to send the hash
-    string expectedHash = to_string(fnv1a_hash(token));
-    char receivedHash[1024] = {0};
-    if (recv(client_socket, receivedHash, sizeof(receivedHash), 0) == -1) {
-        perror("Error receiving hash from client");
-        close(client_socket);
-        return;
-    }
-    cout << "Hash received from client\nChecking hash...\n";
+        void handle_client() {
+            flush_socket_buffer(client_socket);
 
-    string receivedHashString = string(receivedHash);
+            string token = generate_random_string(TOKEN_LENGTH);
+            cout << "Token: " << token << '\n';
 
-    cout << "Received hash: " << receivedHashString << endl;
-    cout << "Expected hash: " << expectedHash << endl;
+            if (send(client_socket, token.c_str(), token.size() + 1, 0) == -1) {
+                perror("[ERROR] : Sending token to client failed");
+                close(client_socket);
+                return;
+            }
+            cout << "[LOG] : Token sent to client. Waiting for hash...\n";
 
-    if (authenticateClient(receivedHashString, expectedHash)) {
-        cout << "Hash verified!\n";
-        string successMessage = "Authentication successful\n";
-        if (send(client_socket, successMessage.c_str(), successMessage.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending success message to client");
+            flush_socket_buffer(client_socket);
+
+            string expected_hash = to_string(fnv1a_hash(token));
+            char received_hash[1024] = {0};
+            if (recv(client_socket, received_hash, sizeof(received_hash), 0) == -1) {
+                perror("[ERROR] : Receiving hash from client failed");
+                close(client_socket);
+                return;
+            }
+            cout << "[LOG] : Hash received from client. Checking hash...\n";
+
+            if (authenticate_client(string(received_hash), expected_hash)) {
+                cout << "[LOG] : Hash verified!\n";
+                send_message("Authentication successful\n");
+
+                string folder_name = create_timestamped_folder();
+                if (!folder_name.empty()) {
+                    cout << "[LOG] : Folder created successfully.\n";
+                    send_message("start");
+
+                    receive_files(folder_name);
+                } else {
+                    cout << "[ERROR] : Folder creation failed.\n";
+                }
+            } else {
+                cout << "[LOG] : Hash verification failed!\n";
+            }
+
             close(client_socket);
-            return;
         }
 
-        // Create folder with today's date
-        time_t now = time(0);
-        tm *ltm = localtime(&now);
-        string folderName = to_string(1900 + ltm->tm_year) + "-" + to_string(1 + ltm->tm_mon) + "-" + to_string(ltm->tm_mday);
-        if (createFolder(folderName)) {
-            cout << "Folder created successfully\n";
-        } else {
-            cout << "Error creating folder\n";
-            close(client_socket);
-            return;
-        }
-
-        string signal = "start";
-        if (send(client_socket, signal.c_str(), signal.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending signal to client");
-        }
-
-        // Loop to receive multiple files
-        while (true) {
-            // Receive file metadata
-            char filename[1024] = {0};
-            if (recv(client_socket, filename, sizeof(filename), 0) == -1) {
-                perror("Error receiving filename from client");
-                close(client_socket);
-                return;
-            }
-            if (strcmp(filename, "end_of_files") == 0) {
-                break; // End of file transmission
-            }
-            cout << "File name: " << filename << endl;
-
-            // Receive file size
-            size_t filesize;
-            if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
-                perror("Error receiving file size from client");
-                close(client_socket);
-                return;
-            }
-            cout << "File size: " << filesize << " bytes" << endl;
-
-            string filepath = folderName + "/" + string(filename);
-            ofstream file(filepath, ios::binary);
-            if (!file) {
-                perror("Error opening file for writing");
-                close(client_socket);
-                return;
-            }
-
-            // Receive file data in chunks
+        void flush_socket_buffer(int socket) {
             char buffer[1024];
-            size_t bytes_received = 0;
-            while (bytes_received < filesize) {
-                ssize_t n = recv(client_socket, buffer, sizeof(buffer), 0);
-                if (n == -1) {
-                    perror("Error receiving file from client");
-                    close(client_socket);
+            int bytes_available = 0;
+
+            if (ioctl(socket, FIONREAD, &bytes_available) == -1) {
+                perror("[ERROR] : Checking socket buffer failed");
+                return;
+            }
+
+            while (bytes_available > 0) {
+                ssize_t bytes_received = recv(socket, buffer, sizeof(buffer), 0);
+                if (bytes_received <= 0) {
+                    break;
+                }
+                bytes_available -= bytes_received;
+            }
+        }
+
+        string generate_random_string(size_t length) {
+            const string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:',.<>?/~`";
+            random_device rd;
+            mt19937 generator(rd());
+            uniform_int_distribution<> distribution(0, characters.size() - 1);
+
+            string random_string;
+            for (size_t i = 0; i < length; ++i) {
+                random_string += characters[distribution(generator)];
+            }
+            return random_string;
+        }
+
+        size_t fnv1a_hash(const string& str) {
+            const size_t FNV_offset_basis = 14695981039346656037ULL;
+            const size_t FNV_prime = 1099511628211ULL;
+
+            size_t hash = FNV_offset_basis;
+            for (char c : str) {
+                hash ^= static_cast<size_t>(c);
+                hash *= FNV_prime;
+            }
+            return hash;
+        }
+
+        bool authenticate_client(const string& received_hash, const string& expected_hash) {
+            return received_hash == expected_hash;
+        }
+
+        bool create_folder(const string& folder_name) {
+            if (mkdir(folder_name.c_str(), 0755) == -1) {
+                perror("[ERROR] : Creating folder failed");
+                return false;
+            }
+            return true;
+        }
+
+        string create_timestamped_folder() {
+            time_t now = time(0);
+            tm *ltm = localtime(&now);
+            string folder_name = to_string(1900 + ltm->tm_year) + "-" +
+                                 to_string(1 + ltm->tm_mon) + "-" +
+                                 to_string(ltm->tm_mday) + "_" +
+                                 to_string(ltm->tm_hour) + "-" +
+                                 to_string(ltm->tm_min) + "-" +
+                                 to_string(ltm->tm_sec);
+            return create_folder(folder_name) ? folder_name : "";
+        }
+
+        void receive_files(const string& folder_name) {
+            while (true) {
+                flush_socket_buffer(client_socket);
+
+                char filename[1024] = {0};
+                if (recv(client_socket, filename, sizeof(filename), 0) == -1) {
+                    perror("[ERROR] : Receiving filename from client failed");
                     return;
                 }
-                file.write(buffer, n);
-                bytes_received += n;
+                if (strcmp(filename, "end_of_files") == 0) {
+                    break;
+                }
+                cout << "[LOG] : Receiving file: " << filename << endl;
+
+                size_t filesize;
+                if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
+                    perror("[ERROR] : Receiving file size from client failed");
+                    return;
+                }
+                cout << "[LOG] : File size: " << filesize << " bytes\n";
+
+                string filepath = folder_name + "/" + string(filename);
+                ofstream file(filepath, ios::binary);
+                if (!file) {
+                    perror("[ERROR] : Opening file for writing failed");
+                    return;
+                }
+
+                char buffer[1024];
+                size_t bytes_received = 0;
+                while (bytes_received < filesize) {
+                    ssize_t n = recv(client_socket, buffer, min(sizeof(buffer), filesize - bytes_received), 0);
+                    if (n == -1) {
+                        perror("[ERROR] : Receiving file data from client failed");
+                        return;
+                    }
+                    file.write(buffer, n);
+                    bytes_received += n;
+                }
+
+                cout << "[LOG] : File received and saved to " << filepath << endl;
+                send_message("File received: " + string(filename));
             }
+            cout << "[LOG] : All files received.\n";
+        }
 
-            cout << "File received and saved to " << filepath << endl;
-
-            // Inform client that the file has been received
-            string fileReceived = "File received: ";
-            if (send(client_socket, fileReceived.c_str(), fileReceived.size() + 1, 0) == -1) { // include null terminator
-                perror("Error sending file received message to client");
-                close(client_socket);
-                return;
+        void send_message(const string& message) {
+            if (send(client_socket, message.c_str(), message.size() + 1, 0) == -1) {
+                perror("[ERROR] : Sending message to client failed");
             }
         }
 
-        cout << "All files received.\n";
-    } else {
-        cout << "Hash verification failed!\n";
-    }
+        static void signal_handler(int signum) {
+            cout << "\nInterrupt signal (" << signum << ") received. Shutting down...\n";
+            exit(signum);
+        }
 
-    close(client_socket);
-}
+        void register_signal_handler() {
+            signal(SIGINT, signal_handler);
+        }
+};
 
 int main() {
-    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket == -1) {
-        perror("Error creating socket");
-        exit(EXIT_FAILURE);
-    }
-
-    struct sockaddr_in server_addr;
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = INADDR_ANY;
-    server_addr.sin_port = htons(6969);
-
-    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-        perror("Error binding socket");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_socket, 3) == -1) {
-        perror("Error listening on port 6969");
-        close(server_socket);
-        exit(EXIT_FAILURE);
-    }
-
-    cout << "Listening on port 6969\n";
-
-    while (true) {
-        int client_socket = accept(server_socket, NULL, NULL);
-        if (client_socket == -1) {
-            perror("Client socket setup error");
-            continue;
-        }
-
-        cout << "Connection accepted from client\n";
-        handleClient(client_socket);
-    }
-
-    close(server_socket);
+    Server server(6969);
+    server.run();
     return 0;
 }
-

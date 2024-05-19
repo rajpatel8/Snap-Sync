@@ -1,10 +1,3 @@
-//  header file for the server 
-
-#include <Lord-Rajkumar.h>          // Local - env
-// #include <bits/stdc++.h>         // Global - env
-
-// beta - still unstable
-// #include <server.h>
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -15,11 +8,11 @@
 #include <netinet/in.h>
 #include <netdb.h>        // For getaddrinfo()
 #include <random>
-#include <thread>
 #include <sys/stat.h>     // For mkdir
 #include <openssl/evp.h>
 
 using namespace std;
+
 struct HostInfo {
     string hostname;
     string ip_addresses;
@@ -43,7 +36,7 @@ HostInfo getHostAndIP() {
     struct in_addr **addr_list = (struct in_addr **)host_entry->h_addr_list;
     for (int i = 0; addr_list[i] != NULL; i++) {
         info.ip_addresses += inet_ntoa(*addr_list[i]);
-        if (addr_list[i+1] != NULL) {
+        if (addr_list[i + 1] != NULL) {
             info.ip_addresses += " ";
         }
     }
@@ -175,7 +168,7 @@ int main() {
         }
 
         cout << "Connection accepted from client\n";
-        thread(handleClient, client_socket).detach();
+        handleClient(client_socket);
     }
 
     close(server_socket);

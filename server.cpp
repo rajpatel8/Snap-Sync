@@ -176,10 +176,29 @@ private:
     }
 
     bool create_folder(const string& folder_name) {
-        if (mkdir(folder_name.c_str(), 0755) == -1) {
-            perror("[ERROR] : Creating folder failed");
-            return false;
+        cout << "[DEBUG] : Trying to create folder: " << folder_name << endl;
+        if (folder_name == ".") {
+            cout << "[DEBUG] : Skipping creation of current directory.\n";
+            return true;
         }
+        size_t pos = folder_name.find_last_of('/');
+        if (pos!= string::npos) {
+            string parent_folder = folder_name.substr(0, pos);
+            if (!create_folder(parent_folder)) {
+                return false;
+            }
+        }
+        if (mkdir(folder_name.c_str(), 0755) == -1) {
+            if (errno == EEXIST) { // Folder already exists, skip error
+                cout << "[DEBUG] : Folder already exists: " << folder_name << endl;
+                return true;
+            } else {
+                perror("[ERROR] : Creating folder failed");
+                cout << "[DEBUG] : Error creating folder: " << strerror(errno) << endl;
+                return false;
+            }
+        }
+        cout << "[DEBUG] : Folder created successfully: " << folder_name << endl;
         return true;
     }
 
@@ -196,6 +215,11 @@ private:
     }
 
     void receive_files(const string& folder_name) {
+        string full_folder_path = "./" + folder_name;
+        mkdir(full_folder_path.c_str(), 0755); // Create the folder here
+
+        string current_folder = full_folder_path; // Use the full folder path as the current folder
+
         while (true) {
             flush_socket_buffer(client_socket);
 
@@ -214,40 +238,55 @@ private:
             if (strcmp(filename, "end_of_files") == 0) {
                 break;
             }
-            cout << "[LOG] : Receiving file: " << filename << endl;
 
-            size_t filesize;
-            if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
-                perror("[ERROR] : Receiving file size from client failed");
-                return;
-            }
-            cout << "[LOG] : File size: " << filesize << " bytes\n";
-
-            string filepath = folder_name + "/" + string(filename);
-            ofstream file(filepath, ios::binary);
-            if (!file) {
-                perror("[ERROR] : Opening file for writing failed");
-                return;
-            }
-
-            char buffer[1024];
-            size_t bytes_received = 0;
-            while (bytes_received < filesize) {
-                ssize_t n = recv(client_socket, buffer, min(sizeof(buffer), filesize - bytes_received), 0);
-                if (n == -1) {
-                    perror("[ERROR] : Receiving file data from client failed");
+            if (strncmp(filename, "DIR:", 4) == 0) {
+                string dir_path = filename + 4; // Skip "DIR:"
+                dir_path = current_folder + "/" + dir_path;
+                if (!create_folder(dir_path)) {
+                    perror("[ERROR] : Creating directory failed");
                     return;
                 }
-                file.write(buffer, n);
-                bytes_received += n;
-            }
+                cout << "[LOG] : Directory created: " << dir_path << endl;
+            } else {
+                cout << "[LOG] : Receiving file: " << filename << endl;
 
-            cout << "[LOG] : File received and saved to " << filepath << endl;
-            send_message("File received: " + string(filename));
+                ssize_t filesize;
+                if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
+                    perror("[ERROR] : Receiving file size from client failed");
+                    return;
+                }
+                cout << "[LOG] : File size: " << filesize << " bytes\n";
+
+                if (filesize <= 0) {
+                    perror("[ERROR] : Invalid file size received");
+                    return;
+                }
+
+                string filepath = current_folder + "/" + string(filename);
+                ofstream file(filepath, ios::binary);
+                if (!file) {
+                    perror("[ERROR] : Opening file for writing failed");
+                    return;
+                }
+
+                char buffer[1024];
+                size_t bytes_received = 0;
+                while (bytes_received < filesize) {
+                    ssize_t n = recv(client_socket, buffer, min(sizeof(buffer), filesize - bytes_received), 0);
+                    if (n == -1) {
+                        perror("[ERROR] : Receiving file data from client failed");
+                        return;
+                    }
+                    file.write(buffer, n);
+                    bytes_received += n;
+                }
+
+                cout << "[LOG] : File received and saved to " << filepath << endl;
+                send_message("File received: " + string(filename));
+            }
         }
         cout << "[LOG] : All files received.\n";
     }
-
     void send_message(const string& message) {
         if (send(client_socket, message.c_str(), message.size() + 1, 0) == -1) { // include null terminator
             perror("[ERROR] : Sending message to client failed");

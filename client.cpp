@@ -119,7 +119,7 @@ private:
 
         // Get the file size
         file.seekg(0, ios::end);
-        size_t filesize = file.tellg();
+        ssize_t filesize = file.tellg();
         file.seekg(0, ios::beg);
 
         // Send the filename
@@ -135,9 +135,17 @@ private:
             return false;
         }
 
+        cout<<"filesize: "<<filesize<<endl;
+
         // Send the file size
         if (send(client_socket, &filesize, sizeof(filesize), 0) == -1) {
             perror("Error sending file size to server");
+            file.close();
+            return false;
+        }
+
+        if (filesize <= 0) {
+            perror("Error: Invalid file size");
             file.close();
             return false;
         }
@@ -173,19 +181,33 @@ private:
         }
 
         bool files_sent = false;
-        while ((ent = readdir(dir)) != NULL) {
+        while ((ent = readdir(dir))!= NULL) {
             if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
                 continue;
             }
 
             string filepath = directory_path + string(ent->d_name);
-            if (!send_file(filepath)) {
+            struct stat sb;
+            if (stat(filepath.c_str(), &sb) == -1) {
+                perror("Error getting file status");
                 closedir(dir);
                 send_end_signal();
                 exit(EXIT_FAILURE);
             }
 
-            cout << "\nFile sent to the server: " << filepath << endl;
+            if (S_ISREG(sb.st_mode)) { // Regular file
+                if (!send_file(filepath)) {
+                    closedir(dir);
+                    send_end_signal();
+                    exit(EXIT_FAILURE);
+                }
+                cout << "\nFile sent to the server: " << filepath << endl;
+            } else if (S_ISDIR(sb.st_mode)) { // Directory
+                string dir_path = filepath + "/";
+                send_directory(dir_path);
+                send_files_in_directory(dir_path);
+                cout << "\nDirectory sent to the server: " << filepath << endl;
+            }
 
             // Wait for confirmation from the server before sending the next file
             char confirmation[1024];
@@ -206,6 +228,14 @@ private:
 
         send_end_signal();
         cout << "\nAll files sent to the server\n";
+    }
+
+    void send_directory(const string& dir_path) {
+        string dir_message = "DIR:" + dir_path;
+        if (send(client_socket, dir_message.c_str(), dir_message.size() + 1, 0) == -1) { // include null terminator
+            perror("Error sending directory to server");
+            exit(EXIT_FAILURE);
+        }
     }
 
     void send_end_signal() {

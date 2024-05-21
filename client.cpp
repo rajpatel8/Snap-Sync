@@ -1,40 +1,24 @@
 #include <iostream>
 #include <string>
 #include <cstring>
-#include <cstdlib>
-#include <unistd.h>
-#include <arpa/inet.h>
 #include <sys/socket.h>
-#include <netinet/in.h>
-#include <dirent.h>
-#include <fstream>
-#include <sys/stat.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 
-#define DIRECTORY_PATH "test_data/"
+#define PORT 6969
+#define BUFFER_SIZE 1024
 
 using namespace std;
 
-// FNV-1a hash function
-size_t fnv1a_hash(const string& str) {
-    const size_t FNV_offset_basis = 14695981039346656037ULL;
-    const size_t FNV_prime = 1099511628211ULL;
-
-    size_t hash = FNV_offset_basis;
-    for (char c : str) {
-        hash ^= static_cast<size_t>(c);
-        hash *= FNV_prime;
-    }
-    return hash;
-}
-
 class Client {
+private:
     int client_socket;
-    struct sockaddr_in server_addr;
+    struct sockaddr_in server_address;
 
 public:
-    Client(const string& ip_address, int port) {
+    Client() {
         create_socket();
-        setup_server_address(ip_address, port);
+        setup_server_address();
         connect_to_server();
     }
 
@@ -42,213 +26,72 @@ public:
         close(client_socket);
     }
 
-    void run() {
-        authenticate();
-        send_files_in_directory(DIRECTORY_PATH);
+    void communicate() {
+        char buffer[BUFFER_SIZE] = {0};
+        while (true) {
+            cout << "Enter command (type 'exit' to quit): ";
+            string command;
+            getline(cin, command);
+
+            if (command == "exit") {
+                send_message(command);
+                break;
+            }
+
+            send_message(command);
+
+            usleep(100000); 
+            
+            receive_message(buffer);
+
+            cout << "Server response: " << buffer << endl;
+            memset(buffer, 0, BUFFER_SIZE);
+        }
     }
 
 private:
     void create_socket() {
-        if ((client_socket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
-            perror("Error creating socket");
+        if ((client_socket = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+            perror("[ERROR] : Socket creation failed");
             exit(EXIT_FAILURE);
         }
+        cout << "[LOG] : Socket created successfully.\n";
     }
 
-    void setup_server_address(const string& ip_address, int port) {
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
-        if (inet_pton(AF_INET, ip_address.c_str(), &server_addr.sin_addr) <= 0) {
-            perror("Invalid address/ Address not supported");
-            close(client_socket);
+    void setup_server_address() {
+        server_address.sin_family = AF_INET;
+        server_address.sin_port = htons(PORT);
+        if (inet_pton(AF_INET, "127.0.0.1", &server_address.sin_addr) <= 0) {
+            perror("[ERROR] : Invalid address/ Address not supported");
             exit(EXIT_FAILURE);
         }
     }
 
     void connect_to_server() {
-        if (connect(client_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) == -1) {
-            perror("Error connecting to server");
-            close(client_socket);
+        if (connect(client_socket, (struct sockaddr *)&server_address, sizeof(server_address)) < 0) {
+            perror("[ERROR] : Connection failed");
+            exit(EXIT_FAILURE);
+        }
+        cout << "[LOG] : Connected to the server.\n";
+    }
+
+    void send_message(const string& message) {
+        if (send(client_socket, message.c_str(), message.length(), 0) < 0) {
+            perror("[ERROR] : Sending message failed");
             exit(EXIT_FAILURE);
         }
     }
 
-    void authenticate() {
-        char token[1024];
-        if (recv(client_socket, token, sizeof(token), 0) == -1) {
-            perror("Error receiving token from server");
-            exit(EXIT_FAILURE);
-        }
-
-        cout << "\nToken received from the server: " << token << endl;
-
-        string token_string(token);
-        string token_hash = to_string(fnv1a_hash(token_string));
-
-        if (send(client_socket, token_hash.c_str(), token_hash.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending hash to server");
-            exit(EXIT_FAILURE);
-        }
-
-        cout << "\nHash sent to the server\n";
-        cout << "\nWaiting for the server to authenticate...\n";
-
-        char auth_status[1024] = {0};
-        if (recv(client_socket, auth_status, sizeof(auth_status), 0) == -1) {
-            perror("Error receiving authentication status from server");
-            exit(EXIT_FAILURE);
-        }
-
-        cout << auth_status << endl;
-
-        char signal[1024] = {0};
-        if (recv(client_socket, signal, sizeof(signal), 0) == -1) {
-            perror("Error receiving start signal from server");
-            exit(EXIT_FAILURE);
-        }
-
-        cout << "Server signal: " << signal << endl;
-    }
-
-    bool send_file(const string& filepath) {
-        ifstream file(filepath, ios::binary);
-        if (!file) {
-            perror("Error opening file");
-            return false;
-        }
-
-        // Get the file size
-        file.seekg(0, ios::end);
-        ssize_t filesize = file.tellg();
-        file.seekg(0, ios::beg);
-
-        // Send the filename
-        string filename = filepath.substr(filepath.find_last_of("/") + 1);
-        if (filename.empty()) {
-            cerr << "Error: Empty filename, skipping file: " << filepath << endl;
-            return false;
-        }
-
-        if (send(client_socket, filename.c_str(), filename.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending filename to server");
-            file.close();
-            return false;
-        }
-
-        cout<<"filesize: "<<filesize<<endl;
-
-        // Send the file size
-        if (send(client_socket, &filesize, sizeof(filesize), 0) == -1) {
-            perror("Error sending file size to server");
-            file.close();
-            return false;
-        }
-
-        if (filesize <= 0) {
-            perror("Error: Invalid file size");
-            file.close();
-            return false;
-        }
-
-        // Send the file data
-        char buffer[1024];
-        while (file.read(buffer, sizeof(buffer))) {
-            if (send(client_socket, buffer, sizeof(buffer), 0) == -1) {
-                perror("Error sending file data to server");
-                file.close();
-                return false;
-            }
-        }
-        if (file.gcount() > 0) {
-            if (send(client_socket, buffer, file.gcount(), 0) == -1) {
-                perror("Error sending remaining file data to server");
-                file.close();
-                return false;
-            }
-        }
-
-        file.close();
-        return true;
-    }
-
-    void send_files_in_directory(const string& directory_path) {
-        DIR* dir;
-        struct dirent* ent;
-        if ((dir = opendir(directory_path.c_str())) == NULL) {
-            perror("Error opening directory");
-            send_end_signal();
-            exit(EXIT_FAILURE);
-        }
-
-        bool files_sent = false;
-        while ((ent = readdir(dir))!= NULL) {
-            if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) {
-                continue;
-            }
-
-            string filepath = directory_path + string(ent->d_name);
-            struct stat sb;
-            if (stat(filepath.c_str(), &sb) == -1) {
-                perror("Error getting file status");
-                closedir(dir);
-                send_end_signal();
-                exit(EXIT_FAILURE);
-            }
-
-            if (S_ISREG(sb.st_mode)) { // Regular file
-                if (!send_file(filepath)) {
-                    closedir(dir);
-                    send_end_signal();
-                    exit(EXIT_FAILURE);
-                }
-                cout << "\nFile sent to the server: " << filepath << endl;
-            } else if (S_ISDIR(sb.st_mode)) { // Directory
-                string dir_path = filepath + "/";
-                send_directory(dir_path);
-                send_files_in_directory(dir_path);
-                cout << "\nDirectory sent to the server: " << filepath << endl;
-            }
-
-            // Wait for confirmation from the server before sending the next file
-            char confirmation[1024];
-            if (recv(client_socket, confirmation, sizeof(confirmation), 0) == -1) {
-                perror("Error receiving confirmation from server");
-                closedir(dir);
-                send_end_signal();
-                exit(EXIT_FAILURE);
-            }
-            cout << "Server confirmation: " << confirmation << endl;
-            files_sent = true;
-        }
-
-        closedir(dir);
-        if (!files_sent) {
-            cout << "No files to send.\n";
-        }
-
-        send_end_signal();
-        cout << "\nAll files sent to the server\n";
-    }
-
-    void send_directory(const string& dir_path) {
-        string dir_message = "DIR:" + dir_path;
-        if (send(client_socket, dir_message.c_str(), dir_message.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending directory to server");
-            exit(EXIT_FAILURE);
-        }
-    }
-
-    void send_end_signal() {
-        string end_signal = "end_of_files";
-        if (send(client_socket, end_signal.c_str(), end_signal.size() + 1, 0) == -1) { // include null terminator
-            perror("Error sending end signal to server");
+    void receive_message(char* buffer) {
+        if (recv(client_socket, buffer, BUFFER_SIZE, 0) < 0) {
+            perror("[ERROR] : Receiving message failed");
             exit(EXIT_FAILURE);
         }
     }
 };
 
 int main() {
-    Client client("127.0.0.1", 6969);
-    client.run();
+    Client client;
+    client.communicate();
     return 0;
 }
